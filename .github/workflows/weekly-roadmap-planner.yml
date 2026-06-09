@@ -50,6 +50,12 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Configure roadmap git identity
+        working-directory: scripts-roadmap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Run planner self-test
         working-directory: scripts-roadmap
         run: PYTHONDONTWRITEBYTECODE=1 python3 issue_planner.py --self-test
