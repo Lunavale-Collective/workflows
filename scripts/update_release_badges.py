@@ -26,6 +26,7 @@ RELEASE_OUTPUT_DIR = Path(
     )
 )
 ROADMAP_OUTPUT_DIR = Path(os.environ.get("ROADMAP_BADGE_OUTPUT_DIR", ".badges/roadmap"))
+WORKFLOW_OUTPUT_DIR = Path(os.environ.get("WORKFLOW_BADGE_OUTPUT_DIR", ".badges/workflows"))
 LOCAL_ROADMAP_ROOT = Path(os.environ.get("ROADMAP_LOCAL_ROOT", "../scripts-roadmap"))
 TOKEN = (
     os.environ.get("ROADMAP_BADGE_TOKEN")
@@ -296,6 +297,7 @@ def load_release(release: dict[str, str]) -> dict[str, str | None]:
 
 
 def write_badge(path: Path, *, label: str, message: str, color: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
@@ -312,9 +314,19 @@ def write_badge(path: Path, *, label: str, message: str, color: str) -> None:
     )
 
 
+def read_badge_message(path: Path) -> str | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    message = data.get("message")
+    return message if isinstance(message, str) and message else None
+
+
 def main() -> int:
     RELEASE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ROADMAP_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    WORKFLOW_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     resolved = [load_release(release) for release in RELEASES]
 
     missing = [item["id"] for item in resolved if not item.get("end")]
@@ -368,9 +380,18 @@ def main() -> int:
         encoding="utf-8",
     )
 
+    roadmap_updated = read_badge_message(WORKFLOW_OUTPUT_DIR / "roadmap-updated.json")
+    write_badge(
+        WORKFLOW_OUTPUT_DIR / "release-dates-updated.json",
+        label="Release Dates Updated",
+        message=roadmap_updated or "unknown",
+        color="0969da" if roadmap_updated else "lightgrey",
+    )
+
     for item in resolved:
         print(f"{item['id']}: {item['message']} ({item['source']})")
     print(f"current-phase: {phase['message']}")
+    print(f"release-dates-updated: {roadmap_updated or 'unknown'}")
     return 0
 
 
