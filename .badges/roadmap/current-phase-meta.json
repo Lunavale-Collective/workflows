@@ -1,7 +1,7 @@
 {
   "color": "0969da",
-  "issue_id": "auth-project-bootstrap",
+  "issue_id": "database-service-architecture",
   "label": "Current Phase",
-  "message": "Auth service MVP",
-  "parent_id": "auth-service-mvp"
+  "message": "Service database architecture layer",
+  "parent_id": "service-database-architecture-layer"
 }
