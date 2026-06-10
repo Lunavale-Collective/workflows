@@ -15,6 +15,7 @@ jobs:
         repo:
           - service-admin
           - service-auth
+          - service-database
           - service-economy
           - service-gateway
           - service-infra
