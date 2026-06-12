@@ -35,6 +35,7 @@ TOKEN = (
 )
 ALLOW_TBD = os.environ.get("ALLOW_TBD_BADGES", "").lower() in {"1", "true", "yes"}
 ACTIVE_STATUSES = {"planned", "in_progress"}
+INACTIVE_STATUSES = {"not_planned"}
 
 RELEASES = [
     {
@@ -211,10 +212,12 @@ def read_local_issue_files() -> dict[str, dict[str, str | None]]:
         return {}
 
     issues: dict[str, dict[str, str | None]] = {}
-    for issue_path in sorted(issue_dir.glob("*.yml")):
+    for issue_path in sorted(issue_dir.rglob("*.yml")):
         values = parse_scalar_yaml(issue_path.read_text(encoding="utf-8"))
         issue_id = values.get("id") or issue_path.stem
         if not issue_id:
+            continue
+        if str(issue_id) in issues and "closed" in issue_path.parts:
             continue
         values["id"] = issue_id
         values["source"] = "local_roadmap_yml"
@@ -231,46 +234,200 @@ def issue_sort_date(issue: dict[str, str | None]) -> dt.date:
     return dt.date.max
 
 
-def current_phase(issues: dict[str, dict[str, str | None]]) -> dict[str, str | None]:
+def roadmap_today() -> dt.date:
     today_text = os.environ.get("ROADMAP_TODAY")
-    today = dt.date.fromisoformat(today_text) if today_text else dt.date.today()
+    return dt.date.fromisoformat(today_text) if today_text else dt.date.today()
+
+
+def issue_parent_id(issue: dict[str, str | None]) -> str | None:
+    parent = issue.get("parent")
+    if not parent or parent in {"None", "null"}:
+        return None
+    return str(parent)
+
+
+def root_phase(issue: dict[str, str | None], issues: dict[str, dict[str, str | None]]) -> dict[str, str | None]:
+    current = issue
+    seen: set[str] = set()
+    while True:
+        issue_id = str(current.get("id") or "")
+        if issue_id in seen:
+            return current
+        seen.add(issue_id)
+        parent_id = issue_parent_id(current)
+        if not parent_id or parent_id not in issues:
+            return current
+        current = issues[parent_id]
+
+
+def phase_title(issue: dict[str, str | None] | None) -> str:
+    if not issue:
+        return "Unknown"
+    return str(issue.get("title") or issue.get("id") or "Unknown")
+
+
+def phase_payload(
+    label: str,
+    issue: dict[str, str | None] | None,
+    *,
+    color: str,
+    empty_message: str,
+) -> dict[str, str | None]:
+    if not issue:
+        return {
+            "color": "lightgrey",
+            "end": None,
+            "issue_id": None,
+            "label": label,
+            "message": empty_message,
+            "parent_id": None,
+            "start": None,
+            "status": None,
+        }
+
+    return {
+        "color": color,
+        "end": issue.get("end"),
+        "issue_id": issue.get("id"),
+        "label": label,
+        "message": phase_title(issue),
+        "parent_id": issue_parent_id(issue),
+        "start": issue.get("start"),
+        "status": issue.get("status"),
+    }
+
+
+def phase_candidates(issues: dict[str, dict[str, str | None]]) -> list[dict[str, str | None]]:
+    candidates = []
+    for issue in issues.values():
+        if issue_parent_id(issue):
+            continue
+        if (issue.get("status") or "").lower() in INACTIVE_STATUSES:
+            continue
+        if not parse_iso_date(issue.get("start")) and not parse_iso_date(issue.get("end")):
+            continue
+        candidates.append(issue)
+    return sorted(candidates, key=issue_sort_date)
+
+
+def current_phase_issue(
+    issues: dict[str, dict[str, str | None]],
+    today: dt.date,
+) -> dict[str, str | None] | None:
+    candidates = phase_candidates(issues)
+    current = [
+        issue
+        for issue in candidates
+        if (issue.get("status") or "").lower() in ACTIVE_STATUSES
+        and (parse_iso_date(issue.get("start")) or dt.date.max) <= today
+        and today <= (parse_iso_date(issue.get("end")) or dt.date.min)
+    ]
+    if current:
+        return sorted(current, key=issue_sort_date)[0]
+
+    upcoming = [
+        issue
+        for issue in candidates
+        if (issue.get("status") or "").lower() in ACTIVE_STATUSES
+        and (parse_iso_date(issue.get("start")) or dt.date.min) >= today
+    ]
+    if upcoming:
+        return sorted(upcoming, key=issue_sort_date)[0]
+
     active = [
         issue
         for issue in issues.values()
         if (issue.get("status") or "").lower() in ACTIVE_STATUSES
     ]
     if not active:
-        return {
-            "label": "Current Phase",
-            "message": "No active phase",
-            "color": "lightgrey",
-            "issue_id": None,
-            "parent_id": None,
-        }
+        return None
 
-    current = []
+    current_children = []
     for issue in active:
         start = parse_iso_date(issue.get("start"))
         end = parse_iso_date(issue.get("end"))
         if start and end and start <= today <= end:
-            current.append(issue)
+            current_children.append(issue)
 
     upcoming = [
         issue
         for issue in active
         if (parse_iso_date(issue.get("start")) or dt.date.min) >= today
     ]
-    selected = sorted(current or upcoming or active, key=issue_sort_date)[0]
-    parent_id = selected.get("parent")
-    parent = issues.get(str(parent_id)) if parent_id else None
-    title = (parent or selected).get("title") or parent_id or selected.get("id") or "Unknown"
+    selected = sorted(current_children or upcoming or active, key=issue_sort_date)[0]
+    return root_phase(selected, issues)
+
+
+def previous_phase_issue(
+    issues: dict[str, dict[str, str | None]],
+    today: dt.date,
+    current: dict[str, str | None] | None,
+) -> dict[str, str | None] | None:
+    cutoff = parse_iso_date(current.get("start")) if current else today
+    if not cutoff:
+        cutoff = today
+
+    previous = [
+        issue
+        for issue in phase_candidates(issues)
+        if issue.get("id") != (current or {}).get("id")
+        and (parse_iso_date(issue.get("end")) or dt.date.max) < cutoff
+    ]
+    return sorted(
+        previous,
+        key=lambda issue: parse_iso_date(issue.get("end")) or dt.date.min,
+        reverse=True,
+    )[0] if previous else None
+
+
+def next_phase_issue(
+    issues: dict[str, dict[str, str | None]],
+    today: dt.date,
+    current: dict[str, str | None] | None,
+) -> dict[str, str | None] | None:
+    cutoff = parse_iso_date(current.get("end")) if current else today
+    if not cutoff:
+        cutoff = today
+
+    upcoming = [
+        issue
+        for issue in phase_candidates(issues)
+        if issue.get("id") != (current or {}).get("id")
+        and (issue.get("status") or "").lower() in ACTIVE_STATUSES
+        and (parse_iso_date(issue.get("start")) or dt.date.min) > cutoff
+    ]
+    return sorted(upcoming, key=issue_sort_date)[0] if upcoming else None
+
+
+def roadmap_phases(issues: dict[str, dict[str, str | None]]) -> dict[str, dict[str, str | None]]:
+    today = roadmap_today()
+    current = current_phase_issue(issues, today)
+    previous = previous_phase_issue(issues, today, current)
+    next_issue = next_phase_issue(issues, today, current)
     return {
-        "label": "Current Phase",
-        "message": str(title),
-        "color": "0969da",
-        "issue_id": selected.get("id"),
-        "parent_id": parent_id,
+        "last": phase_payload(
+            "Last Phase",
+            previous,
+            color="6f42c1",
+            empty_message="No previous phase",
+        ),
+        "current": phase_payload(
+            "Current Phase",
+            current,
+            color="0969da",
+            empty_message="No active phase",
+        ),
+        "next": phase_payload(
+            "Next Phase",
+            next_issue,
+            color="1f883d",
+            empty_message="No next phase",
+        ),
     }
+
+
+def current_phase(issues: dict[str, dict[str, str | None]]) -> dict[str, str | None]:
+    return roadmap_phases(issues)["current"]
 
 
 def load_release(release: dict[str, str]) -> dict[str, str | None]:
@@ -368,17 +525,18 @@ def main() -> int:
         encoding="utf-8",
     )
 
-    phase = current_phase(read_local_issue_files())
-    write_badge(
-        ROADMAP_OUTPUT_DIR / "current-phase.json",
-        label=str(phase["label"]),
-        message=str(phase["message"]),
-        color=str(phase["color"]),
-    )
-    (ROADMAP_OUTPUT_DIR / "current-phase-meta.json").write_text(
-        json.dumps(phase, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    phases = roadmap_phases(read_local_issue_files())
+    for phase_id, phase in phases.items():
+        write_badge(
+            ROADMAP_OUTPUT_DIR / f"{phase_id}-phase.json",
+            label=str(phase["label"]),
+            message=str(phase["message"]),
+            color=str(phase["color"]),
+        )
+        (ROADMAP_OUTPUT_DIR / f"{phase_id}-phase-meta.json").write_text(
+            json.dumps(phase, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     roadmap_updated = read_badge_message(WORKFLOW_OUTPUT_DIR / "roadmap-updated.json")
     write_badge(
@@ -390,7 +548,8 @@ def main() -> int:
 
     for item in resolved:
         print(f"{item['id']}: {item['message']} ({item['source']})")
-    print(f"current-phase: {phase['message']}")
+    for phase_id, phase in phases.items():
+        print(f"{phase_id}-phase: {phase['message']}")
     print(f"release-dates-updated: {roadmap_updated or 'unknown'}")
     return 0
 

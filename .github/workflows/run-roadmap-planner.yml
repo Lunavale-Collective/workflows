@@ -1,10 +1,10 @@
-name: Weekly Roadmap Planner
+name: Run Roadmap Planner
 
 on:
   workflow_dispatch:
   schedule:
-    # Sunday 1:00 AM EST / 2:00 AM EDT in New York.
-    - cron: "0 6 * * *"
+    # Every six hours.
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
@@ -60,6 +60,28 @@ jobs:
         working-directory: scripts-roadmap
         run: PYTHONDONTWRITEBYTECODE=1 python3 issue_planner.py --self-test
 
+      - name: Refuse stale roadmap YAML base
+        working-directory: scripts-roadmap
+        run: |
+          git fetch origin main
+          local_head="$(git rev-parse HEAD)"
+          remote_head="$(git rev-parse origin/main)"
+
+          if [ "$local_head" = "$remote_head" ]; then
+            echo "Roadmap checkout is current."
+            exit 0
+          fi
+
+          changed_roadmap_files="$(git diff --name-only "$local_head" "$remote_head" -- '*.yml' '*.yaml' roadmap.md)"
+          if [ -n "$changed_roadmap_files" ]; then
+            echo "::error::scripts-roadmap/main changed YAML/data after checkout. Re-run from the latest main instead of merging generated planner data."
+            printf '%s\n' "$changed_roadmap_files"
+            exit 1
+          fi
+
+          echo "Remote changed outside roadmap data; fast-forwarding without a merge commit."
+          git merge --ff-only origin/main
+
       - name: Run full roadmap planner sync
         working-directory: scripts-roadmap
         run: PYTHONDONTWRITEBYTECODE=1 python3 issue_planner.py --full-run
@@ -70,7 +92,7 @@ jobs:
         run: |
           python3 scripts/write_workflow_status_badge.py \
             --output .badges/workflows/roadmap-updated.json \
-            --label "Roadmap Updated" \
+            --label "Run Roadmap Planner" \
             --color "0969da"
 
       - name: Commit roadmap status badge
