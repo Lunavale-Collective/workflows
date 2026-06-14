@@ -19,6 +19,9 @@ jobs:
       build_date: ${{ steps.metadata.outputs.build_date }}
       build_time: ${{ steps.metadata.outputs.build_time }}
       repo_files_sha256: ${{ steps.metadata.outputs.repo_files_sha256 }}
+      release_hash_suffix: ${{ steps.metadata.outputs.release_hash_suffix }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_title: ${{ steps.metadata.outputs.release_title }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
       unity_editor_version: ${{ steps.metadata.outputs.unity_editor_version }}
 
@@ -135,6 +138,7 @@ jobs:
           buildMethod: Lunavale.EditorTools.LunavaleBuildAutomation.BuildFromCommandLine
           buildName: Lunavale
           buildsPath: game-unity/src/Builds/${{ matrix.asset_os }}_${{ matrix.asset_arch }}
+          chownFilesTo: 1001:1001
           versioning: Custom
           version: ${{ needs.version-gate.outputs.version }}
           customParameters: >
@@ -143,11 +147,42 @@ jobs:
             -lunavaleBuildName Lunavale
             -lunavaleBuildPath Builds/${{ matrix.asset_os }}_${{ matrix.asset_arch }}/${{ matrix.output_name }}
 
+      - name: Prepare Linux player executable
+        if: matrix.asset_os == 'linux'
+        run: |
+          set -euo pipefail
+          player="game-unity/src/Builds/linux_x64/Lunavale.x86_64"
+
+          if [ ! -f "$player" ]; then
+            echo "::error::Linux player executable not found: $player"
+            exit 1
+          fi
+
+          chmod +x "$player" || sudo chmod +x "$player"
+
+      - name: Smoke Linux player startup
+        if: matrix.asset_os == 'linux'
+        run: |
+          set -euo pipefail
+          player="game-unity/src/Builds/linux_x64/Lunavale.x86_64"
+          log="$RUNNER_TEMP/lunavale-linux-player-smoke.log"
+
+          if [ ! -x "$player" ]; then
+            echo "::error::Linux player executable bit was not set: $player"
+            exit 1
+          fi
+
+          "$player" -batchmode -nographics -lunavaleSmokeQuit -logFile "$log"
+          if ! grep -q "Lunavale player smoke startup reached" "$log"; then
+            echo "::error::Linux player smoke log did not contain the expected startup marker."
+            cat "$log"
+            exit 1
+          fi
+
       - name: Package build
         id: package
         run: |
           set -euo pipefail
-
           asset_name="${ASSET_OS}_${ASSET_ARCH}_${VERSION}_${BUILD_DATE}_${BUILD_TIME}_${REPO_HASH}.${PACKAGE_EXT}"
           build_root="game-unity/src/Builds/${ASSET_OS}_${ASSET_ARCH}"
           package_root="$RUNNER_TEMP/lunavale-package/${ASSET_OS}_${ASSET_ARCH}"
@@ -181,26 +216,6 @@ jobs:
           BUILD_TIME: ${{ needs.version-gate.outputs.build_time }}
           REPO_HASH: ${{ needs.version-gate.outputs.repo_files_sha256 }}
 
-      - name: Smoke Linux player startup
-        if: matrix.asset_os == 'linux'
-        run: |
-          set -euo pipefail
-          player="game-unity/src/Builds/linux_x64/Lunavale.x86_64"
-          log="$RUNNER_TEMP/lunavale-linux-player-smoke.log"
-
-          if [ ! -f "$player" ]; then
-            echo "::error::Linux player executable not found: $player"
-            exit 1
-          fi
-
-          chmod +x "$player"
-          "$player" -batchmode -nographics -lunavaleSmokeQuit -logFile "$log"
-          if ! grep -q "Lunavale player smoke startup reached" "$log"; then
-            echo "::error::Linux player smoke log did not contain the expected startup marker."
-            cat "$log"
-            exit 1
-          fi
-
       - name: Upload packaged build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -233,6 +248,7 @@ jobs:
           Unity bundle version: ${VERSION}
           Build timestamp UTC: ${BUILD_DATE} ${BUILD_TIME}
           Repo files SHA-256: ${REPO_HASH}
+          Release hash suffix: ${RELEASE_HASH_SUFFIX}
 
           Platforms:
           - windows_x64
@@ -246,6 +262,7 @@ jobs:
           BUILD_DATE: ${{ needs.version-gate.outputs.build_date }}
           BUILD_TIME: ${{ needs.version-gate.outputs.build_time }}
           REPO_HASH: ${{ needs.version-gate.outputs.repo_files_sha256 }}
+          RELEASE_HASH_SUFFIX: ${{ needs.version-gate.outputs.release_hash_suffix }}
 
       - name: Create draft release and upload assets
         run: |
@@ -255,17 +272,18 @@ jobs:
             prerelease_flag="--prerelease"
           fi
 
-          gh release create "$VERSION" release-assets/* \
+          gh release create "$RELEASE_TAG" release-assets/* \
             --repo Lunavale-Collective/game-builds \
-            --title "$VERSION" \
+            --title "$RELEASE_TITLE" \
             --notes-file release-notes.md \
             --draft \
             $prerelease_flag
 
-          gh release edit "$VERSION" \
+          gh release edit "$RELEASE_TAG" \
             --repo Lunavale-Collective/game-builds \
             --draft=false
         env:
           GH_TOKEN: ${{ secrets.GAME_BUILDS_RELEASE_TOKEN }}
-          VERSION: ${{ needs.version-gate.outputs.version }}
+          RELEASE_TAG: ${{ needs.version-gate.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.version-gate.outputs.release_title }}
           IS_PRERELEASE: ${{ needs.version-gate.outputs.is_prerelease }}

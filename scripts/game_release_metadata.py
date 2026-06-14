@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+BASE62_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+HEX_SHA256_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
 VERSION_RE = re.compile(
     r"^(?P<major>0|[1-9]\d*)\."
     r"(?P<minor>0|[1-9]\d*)\."
@@ -23,6 +25,8 @@ VERSION_RE = re.compile(
     r"(?:-(?P<pre>[0-9A-Za-z.-]+))?"
     r"(?:\+[0-9A-Za-z.-]+)?$"
 )
+VERSION_BUILD_RE = re.compile(r"^(?P<version>.+?)\s+build\s+(?P<suffix>[0-9A-Za-z]{6})$")
+TAG_BUILD_RE = re.compile(r"^(?P<version>.+)-(?P<suffix>[0-9A-Za-z]{6})$")
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,15 @@ class Version:
         if left != right:
             return -1 if left < right else 1
         return compare_prerelease(self.prerelease, other.prerelease)
+
+
+@dataclass(frozen=True)
+class GameRelease:
+    version: Version
+    tag_name: str
+    name: str
+    hash_suffix: str | None
+    repo_files_sha256: str | None
 
 
 def compare_prerelease(left: tuple[str, ...], right: tuple[str, ...]) -> int:
@@ -125,7 +138,17 @@ def repo_files_hash(repo_root: Path) -> str:
     return digest.hexdigest()
 
 
-def fetch_release_versions(release_repo: str, token: str) -> list[Version]:
+def base62_suffix(hex_sha256: str, length: int = 6) -> str:
+    value = int(hex_sha256, 16)
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, len(BASE62_ALPHABET))
+        encoded = BASE62_ALPHABET[remainder] + encoded
+    encoded = encoded or "0"
+    return encoded[-length:].rjust(length, "0")
+
+
+def fetch_releases(release_repo: str, token: str) -> list[GameRelease]:
     url = f"https://api.github.com/repos/{release_repo}/releases?per_page=100"
     request = urllib.request.Request(
         url,
@@ -139,29 +162,98 @@ def fetch_release_versions(release_repo: str, token: str) -> list[Version]:
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
-    versions: list[Version] = []
+    releases: list[GameRelease] = []
     for release in payload:
-        candidate = release.get("tag_name") or release.get("name")
+        parsed = parse_release(release)
+        if parsed is None:
+            print(
+                f"warning: ignoring non-semver game-builds release "
+                f"'{release.get('tag_name') or release.get('name')}'",
+                file=sys.stderr,
+            )
+            continue
+        releases.append(parsed)
+    return releases
+
+
+def parse_release(release: dict[str, object]) -> GameRelease | None:
+    tag_name = str(release.get("tag_name") or "")
+    name = str(release.get("name") or "")
+    body = str(release.get("body") or "")
+    hash_suffix: str | None = None
+
+    for candidate in (name, tag_name):
+        match = VERSION_BUILD_RE.match(candidate) or TAG_BUILD_RE.match(candidate)
+        if not match:
+            continue
+        try:
+            version = Version.parse(match.group("version"))
+        except ValueError:
+            continue
+        hash_suffix = match.group("suffix")
+        return GameRelease(
+            version=version,
+            tag_name=tag_name,
+            name=name,
+            hash_suffix=hash_suffix,
+            repo_files_sha256=extract_repo_files_sha256(release, body),
+        )
+
+    for candidate in (tag_name, name):
         if not candidate:
             continue
         try:
-            versions.append(Version.parse(candidate))
+            version = Version.parse(candidate)
         except ValueError:
-            print(f"warning: ignoring non-semver game-builds release '{candidate}'", file=sys.stderr)
-    return versions
+            continue
+        return GameRelease(
+            version=version,
+            tag_name=tag_name,
+            name=name,
+            hash_suffix=hash_suffix,
+            repo_files_sha256=extract_repo_files_sha256(release, body),
+        )
+
+    return None
 
 
-def enforce_release_order(current: Version, releases: list[Version]) -> None:
+def extract_repo_files_sha256(release: dict[str, object], body: str) -> str | None:
+    body_match = HEX_SHA256_RE.search(body)
+    if body_match:
+        return body_match.group(0).lower()
+
+    assets = release.get("assets")
+    if isinstance(assets, list):
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "")
+            asset_match = HEX_SHA256_RE.search(name)
+            if asset_match:
+                return asset_match.group(0).lower()
+
+    return None
+
+
+def enforce_release_order(current: Version, current_repo_hash: str, releases: list[GameRelease]) -> None:
     if not releases:
         return
-    latest = max(releases, key=lambda item: VersionSortKey(item))
-    comparison = current.compare(latest)
-    if comparison == 0:
-        raise RuntimeError(f"game-builds already has release version {current.raw}; bump Unity bundleVersion first.")
-    if comparison < 0:
+    latest = max(releases, key=lambda item: VersionSortKey(item.version))
+    if current.compare(latest.version) < 0:
         raise RuntimeError(
-            f"Unity bundleVersion {current.raw} is older than existing game-builds release {latest.raw}; "
+            f"Unity bundleVersion {current.raw} is older than existing game-builds release {latest.version.raw}; "
             "bump Unity bundleVersion before building."
+        )
+
+    duplicate_hash_releases = [
+        release for release in releases
+        if current.compare(release.version) == 0 and release.repo_files_sha256 == current_repo_hash
+    ]
+    if duplicate_hash_releases:
+        existing = duplicate_hash_releases[0]
+        raise RuntimeError(
+            f"game-builds already has release {existing.tag_name or existing.name} for version {current.raw} "
+            f"with repo files SHA-256 {current_repo_hash}; change tracked game files or bump bundleVersion."
         )
 
 
@@ -196,19 +288,24 @@ def main() -> int:
     project_root = args.project_root.resolve()
     version = Version.parse(read_bundle_version(project_root))
     timestamp = datetime.now(timezone.utc)
+    current_repo_hash = repo_files_hash(repo_root)
+    release_hash_suffix = base62_suffix(current_repo_hash)
 
     token = os.environ.get("GAME_BUILDS_RELEASE_TOKEN") or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not args.skip_release_check:
         if not token:
             raise RuntimeError("GAME_BUILDS_RELEASE_TOKEN is required to check game-builds releases.")
-        enforce_release_order(version, fetch_release_versions(args.release_repo, token))
+        enforce_release_order(version, current_repo_hash, fetch_releases(args.release_repo, token))
 
     outputs = {
         "version": version.raw,
         "is_prerelease": "true" if version.is_prerelease else "false",
         "build_date": timestamp.strftime("%Y-%m-%d"),
         "build_time": timestamp.strftime("%H%M%S"),
-        "repo_files_sha256": repo_files_hash(repo_root),
+        "repo_files_sha256": current_repo_hash,
+        "release_hash_suffix": release_hash_suffix,
+        "release_tag": f"{version.raw}-{release_hash_suffix}",
+        "release_title": f"{version.raw} build {release_hash_suffix}",
         "source_sha": run_git(repo_root, "rev-parse", "HEAD"),
         "unity_editor_version": read_editor_version(project_root),
     }
