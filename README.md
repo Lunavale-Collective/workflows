@@ -18,8 +18,8 @@ Keeping shared automation here lets Lunavale run lightweight workflows from one 
 ![Current Phase](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/current-phase.json)
 ![Next Phase](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/next-phase.json)
 
-![Schedule Variance](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/schedule-variance.json)
-![Schedule Delta](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/schedule-delta.json)
+![Release Schedule Variance](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/initial-release-schedule-variance.json)
+![Release Schedule Delta](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/initial-release-schedule-delta.json)
 
 ![Run Roadmap Planner](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/workflows/roadmap-updated.json)
 ![Release Dates Updated](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/workflows/release-dates-updated.json)

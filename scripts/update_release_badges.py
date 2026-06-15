@@ -132,6 +132,54 @@ def parse_int(value: str | None, default: int = 0) -> int:
         return default
 
 
+def parse_config_value(raw_value: str) -> str | None:
+    value = raw_value.strip()
+    if not value or value in {"null", "None", "~"}:
+        return None
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1].replace('\\"', '"')
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    return value
+
+
+def badge_file_id(raw_id: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", raw_id.lower()).strip("-")
+    if not normalized:
+        raise ValueError(f"Invalid generated badge id: {raw_id!r}")
+    return normalized
+
+
+def read_generated_badge_configs() -> list[dict[str, str | None]]:
+    settings_path = LOCAL_ROADMAP_ROOT / "settings.yml"
+    if not settings_path.exists():
+        return []
+
+    configs: list[dict[str, str | None]] = []
+    active_config: dict[str, str | None] | None = None
+    in_gen_badges = False
+    for line in settings_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            key = line.split(":", 1)[0].strip()
+            in_gen_badges = key == "gen-badges"
+            active_config = None
+            continue
+        if not in_gen_badges:
+            continue
+        if line.startswith("  ") and not line.startswith("    "):
+            raw_id = line.strip().split(":", 1)[0]
+            active_config = {"id": badge_file_id(raw_id), "name": raw_id}
+            configs.append(active_config)
+            continue
+        if line.startswith("    ") and active_config is not None and ":" in line:
+            key, raw_value = line.strip().split(":", 1)
+            active_config[key.strip()] = parse_config_value(raw_value)
+
+    return configs
+
+
 def parse_roadmap_body(body: str) -> dict[str, str | None]:
     values: dict[str, str | None] = {}
     for line in body.splitlines():
@@ -446,11 +494,19 @@ def actual_duration_days(issue: dict[str, str | None]) -> int:
 
 def completed_effort_summary(
     issues: dict[str, dict[str, str | None]],
+    since: dt.date | None = None,
 ) -> dict[str, int | float]:
     completed = [
         issue
         for issue in issues.values()
         if (issue.get("status") or "").lower() == "complete"
+        and (
+            since is None
+            or (
+                parse_iso_date(issue.get("completed_at")) is not None
+                and parse_iso_date(issue.get("completed_at")) >= since
+            )
+        )
     ]
     expected_days = sum(parse_int(issue.get("effort")) for issue in completed)
     actual_days = sum(actual_duration_days(issue) for issue in completed)
@@ -492,22 +548,80 @@ def format_variance_percent(delta_percent: float) -> str:
     return "On Track 0.0%"
 
 
-def write_schedule_variance_badges(issues: dict[str, dict[str, str | None]]) -> dict[str, int | float]:
-    summary = completed_effort_summary(issues)
-    color = schedule_variance_color(float(summary["delta_percent"]))
-    write_badge(
-        ROADMAP_OUTPUT_DIR / "schedule-variance.json",
-        label="Schedule Variance",
-        message=format_variance_days(int(summary["delta_days"])),
-        color=color,
+def remove_generated_schedule_badges() -> None:
+    patterns = [
+        "*-schedule-variance.json",
+        "*-schedule-delta.json",
+        "schedule-variance.json",
+        "schedule-delta.json",
+    ]
+    for pattern in patterns:
+        for path in ROADMAP_OUTPUT_DIR.glob(pattern):
+            path.unlink()
+
+
+def default_generated_badge_configs() -> list[dict[str, str | None]]:
+    return [
+        {
+            "delta_label": "Schedule Delta",
+            "id": "schedule",
+            "name": "Schedule",
+            "since": None,
+            "variance_label": "Schedule Variance",
+        }
+    ]
+
+
+def generated_badge_output_paths(config: dict[str, str | None]) -> tuple[Path, Path]:
+    badge_id = str(config["id"])
+    if badge_id == "schedule":
+        return (
+            ROADMAP_OUTPUT_DIR / "schedule-variance.json",
+            ROADMAP_OUTPUT_DIR / "schedule-delta.json",
+        )
+    return (
+        ROADMAP_OUTPUT_DIR / f"{badge_id}-schedule-variance.json",
+        ROADMAP_OUTPUT_DIR / f"{badge_id}-schedule-delta.json",
     )
-    write_badge(
-        ROADMAP_OUTPUT_DIR / "schedule-delta.json",
-        label="Schedule Delta",
-        message=format_variance_percent(float(summary["delta_percent"])),
-        color=color,
-    )
-    return summary
+
+
+def write_schedule_variance_badges(
+    issues: dict[str, dict[str, str | None]],
+) -> list[dict[str, int | float | str | None]]:
+    configs = read_generated_badge_configs() or default_generated_badge_configs()
+    remove_generated_schedule_badges()
+    results: list[dict[str, int | float | str | None]] = []
+    for config in configs:
+        since = parse_iso_date(config.get("since"))
+        summary = completed_effort_summary(issues, since)
+        badge_name = config.get("name") or config["id"]
+        variance_label = config.get("variance_label") or f"{badge_name} Variance"
+        delta_label = config.get("delta_label") or f"{badge_name} Delta"
+        variance_path, delta_path = generated_badge_output_paths(config)
+        color = schedule_variance_color(float(summary["delta_percent"]))
+        write_badge(
+            variance_path,
+            label=str(variance_label),
+            message=format_variance_days(int(summary["delta_days"])),
+            color=color,
+        )
+        write_badge(
+            delta_path,
+            label=str(delta_label),
+            message=format_variance_percent(float(summary["delta_percent"])),
+            color=color,
+        )
+        results.append(
+            {
+                **summary,
+                "delta_path": str(delta_path),
+                "id": config["id"],
+                "name": badge_name,
+                "since": config.get("since"),
+                "variance_path": str(variance_path),
+            }
+        )
+    return results
 
 
 def current_phase(issues: dict[str, dict[str, str | None]]) -> dict[str, str | None]:
@@ -623,7 +737,7 @@ def main() -> int:
             encoding="utf-8",
         )
 
-    variance_summary = write_schedule_variance_badges(issues)
+    variance_summaries = write_schedule_variance_badges(issues)
 
     roadmap_updated = read_badge_message(WORKFLOW_OUTPUT_DIR / "roadmap-updated.json")
     write_badge(
@@ -637,11 +751,12 @@ def main() -> int:
         print(f"{item['id']}: {item['message']} ({item['source']})")
     for phase_id, phase in phases.items():
         print(f"{phase_id}-phase: {phase['message']}")
-    print(
-        "schedule-variance: "
-        f"{format_variance_days(int(variance_summary['delta_days']))}; "
-        f"{format_variance_percent(float(variance_summary['delta_percent']))}"
-    )
+    for summary in variance_summaries:
+        print(
+            f"{summary['id']}: "
+            f"{format_variance_days(int(summary['delta_days']))}; "
+            f"{format_variance_percent(float(summary['delta_percent']))}"
+        )
     print(f"release-dates-updated: {roadmap_updated or 'unknown'}")
     return 0
 
