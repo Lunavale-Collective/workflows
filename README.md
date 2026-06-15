@@ -17,6 +17,7 @@ Keeping shared automation here lets Lunavale run lightweight workflows from one 
 ![Last Phase](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/last-phase.json)
 ![Current Phase](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/current-phase.json)
 ![Next Phase](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/next-phase.json)
+
 ![Schedule Variance](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/schedule-variance.json)
 ![Schedule Delta](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/roadmap/schedule-delta.json)
 
@@ -28,5 +29,3 @@ Keeping shared automation here lets Lunavale run lightweight workflows from one 
 ![Public Beta](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/releases/public-beta.json)
 ![Public Early Release](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/releases/public-early-release.json)
 ![Public Release](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Lunavale-Collective/workflows/main/.badges/releases/public-release.json)
-
-Schedule variance badges use completed roadmap effort: green means saved 50% or more, yellow-green means saved more than 1% and less than 50%, yellow means within 1% either way, and red means behind by more than 1%.
