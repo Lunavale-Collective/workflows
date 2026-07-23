@@ -1,10 +1,10 @@
 {
   "color": "0969da",
-  "end": "2026-07-22",
+  "end": "2026-07-23",
   "issue_id": "asset-production-pipeline",
   "label": "Current Phase",
   "message": "Asset production pipeline",
   "parent_id": null,
-  "start": "2026-07-22",
+  "start": "2026-07-23",
   "status": "planned"
 }
