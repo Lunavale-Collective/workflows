@@ -1,10 +1,10 @@
 {
   "color": "1f883d",
-  "end": "2028-07-12",
-  "issue_id": "qa-beta-and-release-candidates",
+  "end": "2026-11-18",
+  "issue_id": "core-gameplay-foundation",
   "label": "Next Phase",
-  "message": "QA beta and release candidates",
+  "message": "Core gameplay foundation",
   "parent_id": null,
-  "start": "2026-11-18",
+  "start": "2026-08-28",
   "status": "planned"
 }
