@@ -1,10 +1,10 @@
 {
   "color": "6f42c1",
-  "end": "2026-06-14",
-  "issue_id": "unity-account-character-integration",
+  "end": "2026-08-27",
+  "issue_id": "asset-production-pipeline",
   "label": "Last Phase",
-  "message": "Unity account and character integration",
+  "message": "Asset production pipeline",
   "parent_id": null,
-  "start": "2026-06-14",
-  "status": "complete"
+  "start": "2026-08-27",
+  "status": "planned"
 }
