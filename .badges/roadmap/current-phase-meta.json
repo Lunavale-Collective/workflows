@@ -1,10 +1,10 @@
 {
   "color": "0969da",
-  "end": "2026-09-21",
-  "issue_id": "asset-production-pipeline",
+  "end": "2026-12-13",
+  "issue_id": "core-gameplay-foundation",
   "label": "Current Phase",
-  "message": "Asset production pipeline",
+  "message": "Core gameplay foundation",
   "parent_id": null,
-  "start": "2026-09-21",
+  "start": "2026-09-22",
   "status": "planned"
 }
