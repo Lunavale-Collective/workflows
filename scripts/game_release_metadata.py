@@ -106,18 +106,20 @@ def run_git(repo_root: Path, *args: str) -> str:
 
 
 def read_bundle_version(project_root: Path) -> str:
-    settings = project_root / "ProjectSettings" / "ProjectSettings.asset"
-    match = re.search(r"^\s*bundleVersion:\s*(\S+)\s*$", settings.read_text(encoding="utf-8"), re.MULTILINE)
+    text = (project_root / "project.godot").read_text(encoding="utf-8")
+    section = re.search(r"(?ms)^\[application\]\s*\n(.*?)(?=^\[|\Z)", text)
+    match = re.search(r'^config/version\s*=\s*("[^"\n]+")\s*$', section.group(1) if section else "", re.MULTILINE)
     if not match:
-        raise RuntimeError(f"Could not find bundleVersion in {settings}.")
-    return match.group(1)
+        raise RuntimeError("Missing application config/version in project.godot")
+    return json.loads(match.group(1))
 
 
 def read_editor_version(project_root: Path) -> str:
-    version_file = project_root / "ProjectSettings" / "ProjectVersion.txt"
-    match = re.search(r"^m_EditorVersion:\s*(\S+)\s*$", version_file.read_text(encoding="utf-8"), re.MULTILINE)
-    if not match:
-        raise RuntimeError(f"Could not find m_EditorVersion in {version_file}.")
+    import xml.etree.ElementTree as ET
+    project = ET.parse(project_root / "Lunavale.csproj").getroot()
+    match = re.fullmatch(r"Godot.NET.Sdk/(\d+\.\d+\.\d+)", project.attrib.get("Sdk", ""))
+    if not match or project.findtext("PropertyGroup/TargetFramework") != "net8.0":
+        raise RuntimeError("Expected pinned Godot.NET.Sdk and net8.0; update the CI toolchain explicitly.")
     return match.group(1)
 
 
@@ -241,8 +243,8 @@ def enforce_release_order(current: Version, current_repo_hash: str, releases: li
     latest = max(releases, key=lambda item: VersionSortKey(item.version))
     if current.compare(latest.version) < 0:
         raise RuntimeError(
-            f"Unity bundleVersion {current.raw} is older than existing game-builds release {latest.version.raw}; "
-            "bump Unity bundleVersion before building."
+            f"Godot config/version {current.raw} is older than existing game-builds release {latest.version.raw}; "
+            "bump Godot config/version before building."
         )
 
     duplicate_hash_releases = [
@@ -253,7 +255,7 @@ def enforce_release_order(current: Version, current_repo_hash: str, releases: li
         existing = duplicate_hash_releases[0]
         raise RuntimeError(
             f"game-builds already has release {existing.tag_name or existing.name} for version {current.raw} "
-            f"with repo files SHA-256 {current_repo_hash}; change tracked game files or bump bundleVersion."
+            f"with repo files SHA-256 {current_repo_hash}; change tracked game files or bump config/version."
         )
 
 
@@ -307,7 +309,7 @@ def main() -> int:
         "release_tag": f"{version.raw}-{release_hash_suffix}",
         "release_title": f"{version.raw} build {release_hash_suffix}",
         "source_sha": run_git(repo_root, "rev-parse", "HEAD"),
-        "unity_editor_version": read_editor_version(project_root),
+        "godot_editor_version": read_editor_version(project_root),
     }
     write_outputs(args.output, outputs)
     return 0

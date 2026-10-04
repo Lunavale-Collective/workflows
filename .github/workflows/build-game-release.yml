@@ -29,13 +29,13 @@ jobs:
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       release_title: ${{ steps.metadata.outputs.release_title }}
       source_sha: ${{ steps.metadata.outputs.source_sha }}
-      unity_editor_version: ${{ steps.metadata.outputs.unity_editor_version }}
+      godot_editor_version: ${{ steps.metadata.outputs.godot_editor_version }}
 
     steps:
       - name: Check required secrets
         run: |
           if [ -z "$PRIVATE_REPOS_READ_TOKEN" ]; then
-            echo "::error::PRIVATE_REPOS_READ_TOKEN is required to check out game-unity."
+            echo "::error::PRIVATE_REPOS_READ_TOKEN is required to check out game.godot."
             exit 1
           fi
 
@@ -44,201 +44,147 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$UNITY_LICENSE" ]; then
-            echo "::error::UNITY_LICENSE is required for Unity CI builds."
-            exit 1
-          fi
-
-          if [ -z "$UNITY_EMAIL" ]; then
-            echo "::error::UNITY_EMAIL is required for GameCI Unity activation."
-            exit 1
-          fi
-
-          if [ -z "$UNITY_PASSWORD" ]; then
-            echo "::error::UNITY_PASSWORD is required for GameCI Unity activation."
-            exit 1
-          fi
         env:
           PRIVATE_REPOS_READ_TOKEN: ${{ secrets.PRIVATE_REPOS_READ_TOKEN }}
           GAME_BUILDS_RELEASE_TOKEN: ${{ secrets.GAME_BUILDS_RELEASE_TOKEN }}
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
 
       - name: Check out workflows repo
         uses: actions/checkout@v4
 
-      - name: Check out game-unity
+      - name: Check out game.godot
         uses: actions/checkout@v4
         with:
-          repository: Lunavale-Collective/game-unity
+          repository: Lunavale-Collective/game.godot
           ref: main
-          path: game-unity
+          path: game.godot
           token: ${{ secrets.PRIVATE_REPOS_READ_TOKEN }}
           fetch-depth: 0
           lfs: true
           persist-credentials: false
 
-      - name: Read Unity release metadata and enforce version gate
+      - name: Test release helpers
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Read Godot release metadata and enforce version gate
         id: metadata
         run: |
           python3 scripts/game_release_metadata.py \
-            --repo-root game-unity \
-            --project-root game-unity/src \
+            --repo-root game.godot \
+            --project-root game.godot \
             --release-repo Lunavale-Collective/game-builds
         env:
           GAME_BUILDS_RELEASE_TOKEN: ${{ secrets.GAME_BUILDS_RELEASE_TOKEN }}
 
   build:
     needs: version-gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - asset_os: windows
             asset_arch: x64
-            target_platform: StandaloneWindows64
-            unity_arch: x64
+            runner: ubuntu-24.04
+            preset: CI Windows
             package_ext: zip
             output_name: Lunavale.exe
-            build_profile: ""
           - asset_os: macos
-            asset_arch: arm64
-            target_platform: StandaloneOSX
-            unity_arch: arm64
+            asset_arch: universal
+            runner: macos-14
+            preset: CI macOS
             package_ext: zip
             output_name: Lunavale.app
-            build_profile: Assets/Settings/Build Profiles/macOS.asset
           - asset_os: linux
             asset_arch: x64
-            target_platform: StandaloneLinux64
-            unity_arch: x64
+            runner: ubuntu-24.04
+            preset: CI Linux
             package_ext: tar.gz
             output_name: Lunavale.x86_64
-            build_profile: ""
 
     steps:
       - name: Check out workflows repo
         uses: actions/checkout@v4
 
-      - name: Check out game-unity
+      - name: Check out game.godot
         uses: actions/checkout@v4
         with:
-          repository: Lunavale-Collective/game-unity
+          repository: Lunavale-Collective/game.godot
           ref: ${{ needs.version-gate.outputs.source_sha }}
-          path: game-unity
+          path: game.godot
           token: ${{ secrets.PRIVATE_REPOS_READ_TOKEN }}
           lfs: true
           persist-credentials: false
 
-      - name: Build Unity player
-        uses: game-ci/unity-builder@v4
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+      - uses: actions/setup-python@v5
         with:
-          projectPath: game-unity/src
-          unityVersion: ${{ needs.version-gate.outputs.unity_editor_version }}
-          targetPlatform: ${{ matrix.target_platform }}
-          buildProfile: ${{ matrix.build_profile }}
-          buildMethod: Lunavale.EditorTools.LunavaleBuildAutomation.BuildFromCommandLine
-          buildName: Lunavale
-          buildsPath: game-unity/src/Builds/${{ matrix.asset_os }}_${{ matrix.asset_arch }}
-          chownFilesTo: 1001:1001
-          versioning: Custom
-          version: ${{ needs.version-gate.outputs.version }}
-          customParameters: >
-            -lunavaleBuildTarget ${{ matrix.target_platform }}
-            -lunavaleBuildArch ${{ matrix.unity_arch }}
-            -lunavaleBuildName Lunavale
-            -lunavaleBuildPath Builds/${{ matrix.asset_os }}_${{ matrix.asset_arch }}/${{ matrix.output_name }}
+          python-version: "3.12"
 
-      - name: Prepare Linux player executable
-        if: matrix.asset_os == 'linux'
+      - name: Verify pinned source and toolchain
+        env:
+          SOURCE_SHA: ${{ needs.version-gate.outputs.source_sha }}
+          REPO_HASH: ${{ needs.version-gate.outputs.repo_files_sha256 }}
+          GODOT_VERSION: ${{ needs.version-gate.outputs.godot_editor_version }}
+        run: |
+          test "$(git -C game.godot rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$GODOT_VERSION" = '4.7.2'
+          python3 -c 'import sys; from pathlib import Path; sys.path.insert(0,"scripts"); from game_release_metadata import repo_files_hash; import os; assert repo_files_hash(Path("game.godot")) == os.environ["REPO_HASH"]'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install checksum-pinned Godot .NET editor and matching templates
+        env:
+          HOST_OS: ${{ runner.os }}
         run: |
           set -euo pipefail
-          player="game-unity/src/Builds/linux_x64/Lunavale.x86_64"
+          python3 scripts/install_godot.py --host "$HOST_OS" --destination "$RUNNER_TEMP/godot"
 
-          if [ ! -f "$player" ]; then
-            echo "::error::Linux player executable not found: $player"
-            exit 1
-          fi
+      - name: Prepare desktop release presets
+        env:
+          VERSION: ${{ needs.version-gate.outputs.version }}
+        run: python3 scripts/godot_release.py --project game.godot --version "$VERSION"
 
-          chmod +x "$player" || sudo chmod +x "$player"
-
-      - name: Install Linux player smoke dependencies
-        if: matrix.asset_os == 'linux'
+      - name: Import and export Godot C# player
+        timeout-minutes: 60
+        env:
+          PRESET: ${{ matrix.preset }}
+          ASSET_OS: ${{ matrix.asset_os }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          OUTPUT_NAME: ${{ matrix.output_name }}
         run: |
           set -euo pipefail
-          sudo apt-get update
+          build_root="$GITHUB_WORKSPACE/builds/${ASSET_OS}_${ASSET_ARCH}"
+          mkdir -p "$build_root"
+          dotnet build game.godot/Lunavale.csproj -c Debug
+          "$GODOT" --headless --path game.godot --import
+          "$GODOT" --headless --path game.godot --export-release "$PRESET" "$build_root/$OUTPUT_NAME"
+          python3 scripts/verify_godot_build.py "$build_root" "$ASSET_OS"
 
-          audio_package="libasound2t64"
-          if ! apt-cache show "$audio_package" >/dev/null 2>&1; then
-            audio_package="libasound2"
-          fi
-
-          sudo apt-get install -y \
-            xvfb \
-            libglu1-mesa \
-            libgtk-3-0 \
-            libnss3 \
-            libxss1 \
-            "$audio_package"
-
-      - name: Smoke Linux player startup
+      - name: Smoke Linux managed player startup
         if: matrix.asset_os == 'linux'
+        timeout-minutes: 3
         run: |
-          set -euo pipefail
-          player="game-unity/src/Builds/linux_x64/Lunavale.x86_64"
-          log="$RUNNER_TEMP/lunavale-linux-player-smoke.log"
+          python3 scripts/smoke_godot_build.py builds/linux_x64/Lunavale.x86_64
 
-          if [ ! -x "$player" ]; then
-            echo "::error::Linux player executable bit was not set: $player"
-            exit 1
-          fi
-
-          export LIBGL_ALWAYS_SOFTWARE=1
-
-          set +e
-          timeout 90s xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" \
-            "$player" \
-            -batchmode \
-            -force-glcore \
-            -screen-fullscreen 0 \
-            -screen-width 640 \
-            -screen-height 360 \
-            -lunavaleSmokeQuit \
-            -logFile "$log"
-          exit_code=$?
-          set -e
-
-          if [ "$exit_code" -ne 0 ]; then
-            echo "::error::Linux player smoke exited with code $exit_code."
-            if [ -f "$log" ]; then
-              cat "$log"
-            fi
-            exit "$exit_code"
-          fi
-
-          if ! grep -q "Lunavale player smoke startup reached" "$log"; then
-            echo "::error::Linux player smoke log did not contain the expected startup marker."
-            cat "$log"
-            exit 1
-          fi
+      - name: Smoke macOS managed player startup
+        if: matrix.asset_os == 'macos'
+        timeout-minutes: 3
+        run: |
+          python3 scripts/smoke_godot_build.py builds/macos_universal/Lunavale.app/Contents/MacOS/Lunavale
 
       - name: Package build
         id: package
         run: |
           set -euo pipefail
           asset_name="${ASSET_OS}_${ASSET_ARCH}_${VERSION}_${BUILD_DATE}_${BUILD_TIME}_${REPO_HASH}.${PACKAGE_EXT}"
-          build_root="game-unity/src/Builds/${ASSET_OS}_${ASSET_ARCH}"
+          build_root="builds/${ASSET_OS}_${ASSET_ARCH}"
           package_root="$RUNNER_TEMP/lunavale-package/${ASSET_OS}_${ASSET_ARCH}"
           package_path="$RUNNER_TEMP/${asset_name}"
 
           if [ ! -d "$build_root" ]; then
-            echo "::error::Unity build output directory not found: $build_root"
+            echo "::error::Godot build output directory not found: $build_root"
             exit 1
           fi
 
@@ -286,6 +232,11 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Create asset checksums
+        run: |
+          cd release-assets
+          sha256sum -- ./*.zip ./*.tar.gz > SHA256SUMS.txt
+
       - name: Write release notes
         run: |
           set -euo pipefail
@@ -317,24 +268,24 @@ jobs:
           ---
           <sup>Lunavale game build ${VERSION}</sup>
 
-          <sup>Source repository: Lunavale-Collective/game-unity</sup><br>
+          <sup>Source repository: Lunavale-Collective/game.godot</sup><br>
           <sup>Source commit: ${SOURCE_SHA}</sup><br>
-          <sup>Unity editor version: ${UNITY_EDITOR_VERSION}</sup><br>
-          <sup>Unity bundle version: ${VERSION}</sup><br>
+          <sup>Godot .NET editor version: ${GODOT_EDITOR_VERSION}</sup><br>
+          <sup>Godot project version: ${VERSION}</sup><br>
           <sup>Build timestamp UTC: ${BUILD_DATE} ${BUILD_TIME}</sup><br>
           <sup>Repo files SHA-256: ${REPO_HASH}</sup><br>
           <sup>Release hash suffix: ${RELEASE_HASH_SUFFIX}</sup>
 
           <sup>Platforms:</sup><br>
           <sup>windows_x64</sup><br>
-          <sup>macos_arm64</sup><br>
+          <sup>macos_universal</sup><br>
           <sup>linux_x64</sup>
           EOF
         env:
           RELEASE_NOTE_TEXT: ${{ inputs.release_note }}
           VERSION: ${{ needs.version-gate.outputs.version }}
           SOURCE_SHA: ${{ needs.version-gate.outputs.source_sha }}
-          UNITY_EDITOR_VERSION: ${{ needs.version-gate.outputs.unity_editor_version }}
+          GODOT_EDITOR_VERSION: ${{ needs.version-gate.outputs.godot_editor_version }}
           BUILD_DATE: ${{ needs.version-gate.outputs.build_date }}
           BUILD_TIME: ${{ needs.version-gate.outputs.build_time }}
           REPO_HASH: ${{ needs.version-gate.outputs.repo_files_sha256 }}
